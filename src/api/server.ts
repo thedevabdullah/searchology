@@ -33,6 +33,7 @@ app.get('/health', (req: Request, res: Response) => {
   })
 })
 
+
 // ─── public registration — anyone can create an API key ───
 app.post('/register', (req: Request, res: Response) => {
   const { name } = req.body
