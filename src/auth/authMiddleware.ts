@@ -6,7 +6,6 @@ export function requireApiKey(
   res: Response,
   next: NextFunction
 ): void {
-  // key comes in the Authorization header
   const authHeader = req.headers['authorization']
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -27,21 +26,18 @@ export function requireApiKey(
     return
   }
 
-  // check against database
   const record = validateApiKey(key)
 
   if (!record) {
+    // could be invalid, revoked, or expired — validateApiKey handles all three
     res.status(401).json({
       error:   'unauthorized',
-      message: 'invalid or revoked API key'
+      message: 'invalid, revoked, or expired API key'
     })
     return
   }
 
-  // attach key info to request so route handlers can use it
   // @ts-ignore
   req.apiKey = record
-
-  // key is valid — continue to the actual route
   next()
 }

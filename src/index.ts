@@ -10,5 +10,5 @@ initDatabase()
 const PORT = process.env.PORT ?? 3000
 
 app.listen(PORT, () => {
-  console.log(`nl-search-parser running on port ${PORT}`)
+  console.log(`searchology running on port ${PORT}`)
 })

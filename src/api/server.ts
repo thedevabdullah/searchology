@@ -32,7 +32,7 @@ app.get('/health', (req: Request, res: Response) => {
   })
 })
 
-// public registration
+// public registration — 30 days expiry by default
 app.post('/register', (req: Request, res: Response) => {
   const { name } = req.body
   if (!name || typeof name !== 'string' || name.trim() === '') {
@@ -42,10 +42,17 @@ app.post('/register', (req: Request, res: Response) => {
     res.status(400).json({ error: 'invalid_input', message: 'name must be 64 characters or less' }); return
   }
   try {
-    const apiKey = createApiKey(name.trim())
+    const apiKey = createApiKey(name.trim(), 30)
+    const expiry  = apiKey.expires_at ? new Date(apiKey.expires_at) : null
+    const now     = new Date()
+      const daysLeft = expiry
+        ? Math.max(0, Math.ceil((expiry.getTime() - now.getTime()) / 86400000))
+        : null
     res.status(201).json({
-      message: 'API key created successfully',
-      id: apiKey.id, key: apiKey.key, name: apiKey.name, created_at: apiKey.created_at
+      message:    'API key created successfully',
+      key:        apiKey.key,
+      name:       apiKey.name,
+      expires_in:    daysLeft ? daysLeft+' days' : daysLeft,
     })
   } catch (error) {
     console.error('Registration error:', error)
@@ -53,7 +60,7 @@ app.post('/register', (req: Request, res: Response) => {
   }
 })
 
-// GET /logs — supports ?key_id=xxx to filter by individual key
+// GET /logs — supports ?key_id=xxx filter
 app.get('/logs', (req: Request, res: Response) => {
   if (!isAdmin(req)) { res.status(403).json({ error: 'forbidden' }); return }
 
@@ -64,14 +71,11 @@ app.get('/logs', (req: Request, res: Response) => {
     const logs = keyId
       ? db.prepare(`
           SELECT id, api_key_id, query, keys_found, latency_ms, status, error, created_at
-          FROM request_logs
-          WHERE api_key_id = ?
-          ORDER BY created_at DESC LIMIT ?
+          FROM request_logs WHERE api_key_id = ? ORDER BY created_at DESC LIMIT ?
         `).all(keyId, limit)
       : db.prepare(`
           SELECT id, api_key_id, query, keys_found, latency_ms, status, error, created_at
-          FROM request_logs
-          ORDER BY created_at DESC LIMIT ?
+          FROM request_logs ORDER BY created_at DESC LIMIT ?
         `).all(limit)
 
     res.json({ total: logs.length, logs })
@@ -94,8 +98,16 @@ app.post('/extract', requireApiKey, sanitizeQuery, async (req: Request, res: Res
     const { raw, latencyMs } = await extractIntent(query)
     const result             = parseResponse(raw)
     const keysFound          = Object.keys(result).length
+
     logRequest({ apiKeyId, query, keysFound, latencyMs, status: 200 })
-    res.json({ query, result, keys_found: keysFound, latency_ms: latencyMs })
+
+    res.json({
+      query,
+      result,          // now nested: { color: { value: 'black', confidence: 0.98 } }
+      keys_found:  keysFound,
+      latency_ms:  latencyMs
+    })
+
   } catch (error) {
     const latencyMs = Date.now() - startTime
     logRequest({ apiKeyId, query, keysFound: 0, latencyMs, status: 500, error: String(error) })

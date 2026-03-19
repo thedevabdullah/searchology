@@ -1,5 +1,5 @@
 {
-  "name": "nl-search-parser",
+  "name": "searchology",
   "version": "1.0.0",
   "main": "index.js",
   "engines": {
