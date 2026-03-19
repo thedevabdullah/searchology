@@ -4,10 +4,11 @@ import {
   revokeApiKey,
   listApiKeys
 } from '../auth/keyGenerator'
+import { db } from '../db/database'
 
 export const keysRouter = Router()
 
-// simple admin check — reads secret from .env
+// simple admin check
 function isAdmin(req: Request): boolean {
   const secret = req.headers['x-admin-secret']
   return secret === process.env.ADMIN_SECRET
@@ -30,10 +31,10 @@ keysRouter.post('/', (req: Request, res: Response) => {
   const apiKey = createApiKey(name.trim())
 
   res.status(201).json({
-    message: 'API key created',
-    id:      apiKey.id,
-    key:     apiKey.key,       // only shown once — client must save this
-    name:    apiKey.name,
+    message:    'API key created',
+    id:         apiKey.id,
+    key:        apiKey.key,
+    name:       apiKey.name,
     created_at: apiKey.created_at
   })
 })
@@ -72,7 +73,40 @@ keysRouter.get('/', (req: Request, res: Response) => {
       is_active:  k.is_active === 1,
       requests:   k.requests,
       created_at: k.created_at
-      // note: never return the actual key value in list
     }))
   })
+})
+
+// GET /logs — recent request logs (admin only)
+keysRouter.get('/logs', (req: Request, res: Response) => {
+  if (!isAdmin(req)) {
+    res.status(403).json({ error: 'forbidden' })
+    return
+  }
+
+  const limit = Math.min(parseInt(String(req.query.limit || '50')), 200)
+
+  try {
+    const logs = db.prepare(`
+      SELECT
+        id,
+        api_key_id,
+        query,
+        keys_found,
+        latency_ms,
+        status,
+        error,
+        created_at
+      FROM request_logs
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(limit)
+
+    res.json({
+      total: logs.length,
+      logs
+    })
+  } catch (err) {
+    res.status(500).json({ error: 'failed to fetch logs' })
+  }
 })
