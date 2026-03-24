@@ -1,6 +1,7 @@
-import { schema } from '../config/schema.config'
+import { schema as builtInSchema } from '../config/schema.config'
 
-export function buildSystemPrompt(): string {
+// build system prompt from any schema — built-in or custom
+export function buildSystemPrompt(schema: Record<string, string> = builtInSchema): string {
   const attributeLines = Object.entries(schema)
     .map(([key, description]) => `- ${key}: ${description}`)
     .join('\n')
@@ -37,24 +38,44 @@ Rules:
 - If nothing is found, return an empty object: {}
 
 For EACH key you extract, return an object with two fields:
-- "value": the extracted value (use the normalized/standard term, not the slang)
+- "value": the extracted value (use the normalized/standard term)
 - "confidence": a number between 0 and 1 (1.0 = explicitly stated, 0.7 = strongly implied, 0.5 = inferred, 0.3 = weak guess)
 
-Example — input: "blak tshrt for my son under $15"
-Output:
+Example output:
 {
   "color":        { "value": "black",   "confidence": 1.0  },
-  "product_type": { "value": "t-shirt", "confidence": 1.0  },
-  "gender":       { "value": "male",    "confidence": 0.85 },
-  "price_max":    { "value": 15,        "confidence": 0.95 }
+  "price_max":    { "value": 15,        "confidence": 0.95 },
+  "gender":       { "value": "male",    "confidence": 0.8  }
+}
+  `.trim()
 }
 
-Example — input: "kicks under $80 sz 10"
-Output:
+// suggestion prompt — used when 0 keys found
+export function buildSuggestionPrompt(): string {
+  const availableKeys = Object.keys(builtInSchema).slice(0, 20).join(', ')
+
+  return `
+You are a helpful search assistant.
+A user submitted a search query but no structured attributes could be extracted from it.
+
+Your job is to suggest 2-3 better ways to rephrase the query so it contains clear, extractable attributes.
+
+Extractable attributes include things like: ${availableKeys}, and more.
+
+Rules:
+- Return ONLY a valid JSON object
+- Return suggestions as an array of strings
+- Each suggestion should be a natural, improved version of the original query
+- Keep suggestions short and natural — like something a real person would type
+- No markdown, no backticks, no explanation
+
+Example output:
 {
-  "product_type": { "value": "shoes", "confidence": 1.0 },
-  "price_max":    { "value": 80,      "confidence": 1.0 },
-  "size":         { "value": "10",    "confidence": 1.0 }
+  "suggestions": [
+    "black nike running shoes under $80",
+    "men's black nike shoes size 10 under $80",
+    "black athletic shoes for men under $80"
+  ]
 }
   `.trim()
 }
