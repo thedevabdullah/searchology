@@ -20,7 +20,7 @@ function isAdmin(req: Request): boolean {
   return req.headers['x-admin-secret'] === process.env.ADMIN_SECRET
 }
 
-// health check
+// ─── health check ───────────────────────────────────────────────────────────
 app.get('/health', (req: Request, res: Response) => {
   let dbStatus = 'connected'
   try { db.prepare('SELECT 1').get() } catch { dbStatus = 'error' }
@@ -32,7 +32,7 @@ app.get('/health', (req: Request, res: Response) => {
   })
 })
 
-// public registration — 30 days expiry by default
+// ─── public registration ─────────────────────────────────────────────────────
 app.post('/register', (req: Request, res: Response) => {
   const { name } = req.body
   if (!name || typeof name !== 'string' || name.trim() === '') {
@@ -60,7 +60,51 @@ app.post('/register', (req: Request, res: Response) => {
   }
 })
 
-// GET /logs — supports ?key_id=xxx filter
+// ─── GET /key/status ─────────────────────────────────────────────────────────
+app.get('/key/status', requireApiKey, (req: Request, res: Response) => {
+  // @ts-ignore
+  const record = req.apiKey as any
+
+  const now      = new Date()
+  const expiry   = record.expires_at ? new Date(record.expires_at) : null
+  const daysLeft = expiry
+    ? Math.max(0, Math.ceil((expiry.getTime() - now.getTime()) / 86400000))
+    : null
+
+  res.json({
+    status:     'active',
+    name:       record.name,
+    expires_in: daysLeft !== null ? daysLeft + ' days' : null,
+    requests:   record.requests
+  })
+})
+
+// ─── POST /key/refresh ───────────────────────────────────────────────────────
+app.post('/key/refresh', requireApiKey, (req: Request, res: Response) => {
+  // @ts-ignore
+  const record = req.apiKey as any
+
+  const REFRESH_DAYS = 30
+  const newExpiry    = new Date()
+  newExpiry.setDate(newExpiry.getDate() + REFRESH_DAYS)
+  const expires_at   = newExpiry.toISOString().slice(0, 19).replace('T', ' ')
+
+  try {
+    db.prepare(`
+      UPDATE api_keys SET expires_at = ?, is_active = 1 WHERE id = ?
+    `).run(expires_at, record.id)
+
+    res.json({
+      message:    'Key expiry refreshed successfully',
+      expires_in: REFRESH_DAYS + ' days'
+    })
+  } catch (error) {
+    console.error('Refresh error:', error)
+    res.status(500).json({ error: 'refresh_failed', message: 'failed to refresh key expiry' })
+  }
+})
+
+// ─── GET /logs ────────────────────────────────────────────────────────────────
 app.get('/logs', (req: Request, res: Response) => {
   if (!isAdmin(req)) { res.status(403).json({ error: 'forbidden' }); return }
 
@@ -84,10 +128,10 @@ app.get('/logs', (req: Request, res: Response) => {
   }
 })
 
-// admin key management
+// ─── admin key management ─────────────────────────────────────────────────────
 app.use('/keys', keysRouter)
 
-// main extract endpoint
+// ─── main extract endpoint ────────────────────────────────────────────────────
 app.post('/extract', requireApiKey, sanitizeQuery, async (req: Request, res: Response) => {
   const { query } = req.body
   // @ts-ignore
@@ -100,13 +144,7 @@ app.post('/extract', requireApiKey, sanitizeQuery, async (req: Request, res: Res
     const keysFound          = Object.keys(result).length
 
     logRequest({ apiKeyId, query, keysFound, latencyMs, status: 200 })
-
-    res.json({
-      query,
-      result,          // now nested: { color: { value: 'black', confidence: 0.98 } }
-      keys_found:  keysFound,
-      latency_ms:  latencyMs
-    })
+    res.json({ query, result, keys_found: keysFound, latency_ms: latencyMs })
 
   } catch (error) {
     const latencyMs = Date.now() - startTime
