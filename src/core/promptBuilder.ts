@@ -1,81 +1,120 @@
 import { schema as builtInSchema } from '../config/schema.config'
 
-// build system prompt from any schema — built-in or custom
 export function buildSystemPrompt(schema: Record<string, string> = builtInSchema): string {
   const attributeLines = Object.entries(schema)
     .map(([key, description]) => `- ${key}: ${description}`)
     .join('\n')
 
   return `
-You are a structured intent extraction engine.
-Your job is to normalize the user query and then extract search attributes from it.
+You are a strict product search attribute extractor.
+You extract ONLY attributes that are EXPLICITLY stated or CLEARLY implied in the query.
 
-STEP 1 — NORMALIZE (do this silently, never output the normalized query):
-- Fix any spelling mistakes (e.g. "blak" → "black", "tshrt" → "t-shirt")
-- Expand slang and synonyms to standard product terms:
-  - kicks, sneakers, trainers → shoes
-  - tee, tshirt → t-shirt
-  - mobile, cell → phone
-  - specs, eyeglasses → glasses
-  - sofa, couch → sofa
-  - laptop, notebook → laptop
-  - fridge → refrigerator
-  - any other obvious slang or shorthand → standard product term
-- Fix abbreviations (e.g. "sz" → size, "col" → color, "qty" → quantity)
-- Never change the meaning, only standardize the terminology
+STEP 1 — CLASSIFY THE QUERY:
+First decide: is this a real product search query?
+- A real search query contains product names, attributes, prices, sizes, brands, or specific requirements
+- If the query is gibberish, a greeting, random words, emotions, or has no product intent → return {} immediately
+- NON-search examples: "oo my yes come on", "hello world", "lol what", "I am happy today", "hurrah yahoo"
+- REAL search examples: "black shoes under $50", "nike t-shirt size L", "gaming laptop 16gb ram"
 
-STEP 2 — EXTRACT from the normalized query:
-Extract only these attributes if present:
+STEP 2 — NORMALIZE (only if it is a real search query):
+- Fix spelling mistakes: "blak" → "black", "tshrt" → "t-shirt", "shoos" → "shoes"
+- Expand clear slang: "kicks" → "shoes", "tee" → "t-shirt", "mobile" → "phone", "specs" → "glasses"
+- Never change meaning, only fix obvious errors and slang
+
+STEP 3 — EXTRACT with HONEST confidence scoring and STRICT rules:
+Extract ONLY these attributes if they are present:
 ${attributeLines}
 
-Rules:
+CONFIDENCE SCORING RULES:
+- 1.0 = user explicitly and clearly stated it ("black shoes" → color: black is 1.0)
+- 0.8-0.9 = very strongly implied ("son's birthday shirt" → gender: male, occasion: birthday)
+- 0.6-0.7 = reasonably inferred from clear context ("winter jacket" → season: winter)
+- 0.3-0.5 = weakly implied but plausible ("party dress" → style: formal is around 0.4)
+- Below 0.3 = DO NOT INCLUDE — this is pure guessing with no basis in the query
+
+STRICT EXTRACTION RULES:
+1. NEVER guess — if an attribute is not clearly stated or directly implied, do NOT include it
+2. NEVER infer product_type from vague words — "something nice" is NOT a product type
+3. A key must pass this test: "Did the user actually say or mean this?" — if not, exclude it
+
+IMPORTANT:
+- Be honest with confidence — do not inflate scores to seem more useful
+- A key with confidence 0.3 means "weakly implied" — only include if there is real basis
+- Never assign any score to a key that has NO basis whatsoever in the query
+- If nothing passes 0.3, return {}
+
+OUTPUT FORMAT:
 - Return ONLY a valid JSON object
-- Include ONLY keys that are clearly present in the query
-- Do not guess or assume values not mentioned
-- Do not include keys that are not found in the query
-- No markdown, no backticks, no explanation
-- No text before or after the JSON
-- If nothing is found, return an empty object: {}
+- No markdown, no backticks, no explanation, no text before or after the JSON
+- Each extracted key: { "value": <extracted_value>, "confidence": <0.3 to 1.0> }
+- If nothing found or query is not a product search: {}
 
-For EACH key you extract, return an object with two fields:
-- "value": the extracted value (use the normalized/standard term)
-- "confidence": a number between 0 and 1 (1.0 = explicitly stated, 0.7 = strongly implied, 0.5 = inferred, 0.3 = weak guess)
+EXAMPLES:
 
-Example output:
+Input: "black nike running shoes size 10 under $80"
+Output:
 {
-  "color":        { "value": "black",   "confidence": 1.0  },
-  "price_max":    { "value": 15,        "confidence": 0.95 },
-  "gender":       { "value": "male",    "confidence": 0.8  }
+  "color":        { "value": "black",   "confidence": 1.0 },
+  "brand":        { "value": "nike",    "confidence": 1.0 },
+  "product_type": { "value": "shoes",   "confidence": 1.0 },
+  "usage":        { "value": "running", "confidence": 1.0 },
+  "size":         { "value": "10",      "confidence": 1.0 },
+  "price_max":    { "value": 80,        "confidence": 1.0 }
 }
+
+Input: "birthday gift for my 8 year old daughter"
+Output:
+{
+  "occasion":     { "value": "birthday", "confidence": 1.0 },
+  "gift_wrap":    { "value": true,       "confidence": 0.9 },
+  "age":          { "value": 8,          "confidence": 1.0 },
+  "gender":       { "value": "female",   "confidence": 1.0 },
+  "relationship": { "value": "daughter", "confidence": 1.0 }
+}
+
+Input: "something for a party"
+Output:
+{
+  "occasion": { "value": "party", "confidence": 0.9 }
+}
+
+Input: "oo my yes come on hurrah yahoo"
+Output:
+{}
+
+Input: "something nice"
+Output:
+{}
+
+Input: "I need help"
+Output:
+{}
   `.trim()
 }
 
-// suggestion prompt — used when 0 keys found
+// suggestion prompt — used ONLY when extraction returns 0 keys
 export function buildSuggestionPrompt(): string {
-  const availableKeys = Object.keys(builtInSchema).slice(0, 20).join(', ')
-
   return `
 You are a helpful search assistant.
-A user submitted a search query but no structured attributes could be extracted from it.
+A user submitted a search query but no structured product attributes could be extracted from it.
 
-Your job is to suggest 2-3 better ways to rephrase the query so it contains clear, extractable attributes.
-
-Extractable attributes include things like: ${availableKeys}, and more.
+Your job is to suggest 2-3 better, more specific ways to rephrase the query so it contains clear product attributes.
 
 Rules:
-- Return ONLY a valid JSON object
-- Return suggestions as an array of strings
-- Each suggestion should be a natural, improved version of the original query
-- Keep suggestions short and natural — like something a real person would type
-- No markdown, no backticks, no explanation
+- Only suggest rephrasing if the original query looks like it has product intent but was too vague
+- If the query is clearly gibberish or non-product related, return empty suggestions array
+- Each suggestion must be a natural, specific product search query
+- Keep suggestions realistic — like something a real shopper would type
+- Return ONLY a valid JSON object, no markdown, no backticks
 
-Example output:
+Output format:
 {
-  "suggestions": [
-    "black nike running shoes under $80",
-    "men's black nike shoes size 10 under $80",
-    "black athletic shoes for men under $80"
-  ]
+  "suggestions": ["suggestion 1", "suggestion 2", "suggestion 3"]
+}
+
+If the query has no product intent at all:
+{
+  "suggestions": []
 }
   `.trim()
 }

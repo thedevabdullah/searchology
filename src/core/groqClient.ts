@@ -3,9 +3,8 @@ import { buildSystemPrompt, buildSuggestionPrompt } from './promptBuilder'
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
-// extract intent with optional custom schema
 export async function extractIntent(
-  query: string,
+  query:  string,
   schema?: Record<string, string>
 ): Promise<{ raw: string; latencyMs: number }> {
 
@@ -27,12 +26,11 @@ export async function extractIntent(
   }
 }
 
-// get query suggestions when extraction returns 0 keys
 export async function getSuggestions(query: string): Promise<string[]> {
   try {
     const response = await groq.chat.completions.create({
       model:       'llama-3.1-8b-instant',
-      temperature: 0.3,  // slight creativity for varied suggestions
+      temperature: 0.3,
       max_tokens:  200,
       messages: [
         { role: 'system', content: buildSuggestionPrompt() },
@@ -42,11 +40,11 @@ export async function getSuggestions(query: string): Promise<string[]> {
 
     const raw     = response.choices[0]?.message?.content ?? '{}'
     const cleaned = raw.replace(/```json/gi, '').replace(/```/g, '').trim()
+                       .replace(/^[^{]*/, '').replace(/[^}]*$/, '').trim()
     const parsed  = JSON.parse(cleaned)
 
-    return Array.isArray(parsed.suggestions) ? parsed.suggestions : []
+    return Array.isArray(parsed.suggestions) ? parsed.suggestions.filter(Boolean) : []
   } catch {
-    // suggestions failing should never break extraction
     return []
   }
 }
