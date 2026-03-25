@@ -4,6 +4,7 @@ import { parseResponse }   from '../core/responseParser'
 import { requireApiKey }   from '../auth/authMiddleware'
 import { createApiKey }    from '../auth/keyGenerator'
 import { keysRouter }      from './keysRouter'
+import { modelsRouter }    from './modelsRouter'
 import { rateLimiter }     from '../middleware/rateLimiter'
 import { sanitizeQuery }   from '../middleware/sanitize'
 import { corsMiddleware }  from '../middleware/cors'
@@ -271,13 +272,14 @@ app.get('/logs', (req: Request, res: Response) => {
 })
 
 // ─── admin key management ──────────────────────────────────────────────────────
-app.use('/keys', keysRouter)
+app.use('/keys',   keysRouter)
+app.use('/models', modelsRouter)
 
 // ─── main extract endpoint ─────────────────────────────────────────────────────
 app.post('/extract', requireApiKey, sanitizeQuery, async (req: Request, res: Response) => {
   const { query }     = req.body
   const useCustom     = req.query.schema === 'true' || req.body.schema === 'true'
-  
+
   // @ts-ignore
   const record        = req.apiKey as any
   const apiKeyId      = record?.id ?? null
@@ -302,8 +304,8 @@ app.post('/extract', requireApiKey, sanitizeQuery, async (req: Request, res: Res
 
   try {
     const { raw, latencyMs } = await extractIntent(query, activeSchema)
-    const result             = parseResponse(raw)
-    const keysFound          = Object.keys(result).length
+    const result                    = parseResponse(raw)
+    const keysFound                 = Object.keys(result).length
 
     // query suggestions when nothing extracted
     let suggestions: string[] | undefined
@@ -316,9 +318,9 @@ app.post('/extract', requireApiKey, sanitizeQuery, async (req: Request, res: Res
     res.json({
       query,
       result,
-      keys_found:   keysFound,
-      latency_ms:   latencyMs,
-      schema_used:  useCustom ? 'custom' : 'builtin',
+      keys_found:  keysFound,
+      latency_ms:  latencyMs,
+      schema_used: useCustom ? 'custom' : 'builtin',
       ...(suggestions && suggestions.length > 0 && {
         suggestions,
         hint: 'No attributes found. Try one of the suggested queries above.'

@@ -1,17 +1,19 @@
 import Groq from 'groq-sdk'
 import { buildSystemPrompt, buildSuggestionPrompt } from './promptBuilder'
+import { getActiveModelId } from '../db/database'
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
 export async function extractIntent(
   query:  string,
   schema?: Record<string, string>
-): Promise<{ raw: string; latencyMs: number }> {
+): Promise<{ raw: string; latencyMs: number}> {
 
+  const model = getActiveModelId()   // reads active model from DB every call
   const start = Date.now()
 
   const response = await groq.chat.completions.create({
-    model:       'llama-3.1-8b-instant',
+    model,
     temperature: 0,
     max_tokens:  400,
     messages: [
@@ -28,8 +30,9 @@ export async function extractIntent(
 
 export async function getSuggestions(query: string): Promise<string[]> {
   try {
+    const model    = getActiveModelId()
     const response = await groq.chat.completions.create({
-      model:       'llama-3.1-8b-instant',
+      model,
       temperature: 0.3,
       max_tokens:  200,
       messages: [
