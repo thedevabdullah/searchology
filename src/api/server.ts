@@ -327,8 +327,32 @@ app.post('/extract', requireApiKey, sanitizeQuery, async (req: Request, res: Res
       })
     })
 
-  } catch (error) {
+  } catch (error: any) {
     const latencyMs = Date.now() - startTime
+
+    // ── 413: prompt too large for this model's token limit ───────────────────
+    // Groq returns 413 when a single request exceeds the model's per-request
+    // token ceiling (e.g. llama-3.1-8b-instant free tier = 6000 TPM).
+    // Surface a clean, actionable error instead of a generic 500.
+    if (error?.status === 413 || error?.error?.error?.code === 'rate_limit_exceeded') {
+      const retryAfter = error?.headers?.['retry-after']
+        ? parseInt(error.headers['retry-after'], 10)
+        : null
+
+      logRequest({ apiKeyId, query, keysFound: 0, latencyMs, status: 413, error: 'prompt_too_large' })
+      res.status(413).json({
+        error:   'prompt_too_large',
+        message: 'The active model\'s token limit is too small for the current schema. ' +
+                 'Switch to a model with a higher token limit (e.g. llama-3.3-70b-versatile), ' +
+                 'or set a token_limit on the active model via PATCH /models/:id/token-limit ' +
+                 'so the system can automatically use the compact prompt.',
+        ...(retryAfter && { retry_after_seconds: retryAfter }),
+        result: {}
+      })
+      return
+    }
+
+    // ── All other errors ──────────────────────────────────────────────────────
     logRequest({ apiKeyId, query, keysFound: 0, latencyMs, status: 500, error: String(error) })
     console.error('Extraction error:', error)
     res.status(500).json({ error: 'extraction_failed', result: {} })
