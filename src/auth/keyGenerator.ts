@@ -1,21 +1,23 @@
 import { randomUUID } from 'crypto'
-import { db } from '../db/database'
+import { db }         from '../db/database'
 
 const DEFAULT_EXPIRY_DAYS = 30
+const DEFAULT_RPM         = 60
 
-interface ApiKey {
-  id:         string
-  key:        string
-  name:       string
-  is_active:  number
-  requests:   number
-  expires_at: string | null
-  created_at: string
+export interface ApiKey {
+  id:             string
+  key:            string
+  name:           string
+  is_active:      number
+  requests:       number
+  expires_at:     string | null
+  custom_schema:  string | null
+  rate_limit_rpm: number
+  created_at:     string
 }
 
 function generateKeyString(): string {
-  const raw = randomUUID().replace(/-/g, '')
-  return `sgy_${raw}`
+  return `sgy_${randomUUID().replace(/-/g, '')}`
 }
 
 function expiryDate(days: number): string {
@@ -24,77 +26,79 @@ function expiryDate(days: number): string {
   return d.toISOString().slice(0, 19).replace('T', ' ')
 }
 
-// create a new API key — defaults to 30 days expiry, admin can pass custom days
-export function createApiKey(name: string, expiresInDays: number = DEFAULT_EXPIRY_DAYS): ApiKey {
+// ── Create ────────────────────────────────────────────────────────────────────
+export function createApiKey(
+  name:           string,
+  expiresInDays:  number = DEFAULT_EXPIRY_DAYS,
+  rateLimitRpm:   number = DEFAULT_RPM
+): ApiKey {
   const id         = randomUUID()
   const key        = generateKeyString()
   const expires_at = expiryDate(expiresInDays)
+  const rpm        = rateLimitRpm > 0 ? rateLimitRpm : DEFAULT_RPM
 
   db.prepare(`
-    INSERT INTO api_keys (id, key, name, expires_at)
-    VALUES (@id, @key, @name, @expires_at)
-  `).run({ id, key, name, expires_at })
+    INSERT INTO api_keys (id, key, name, expires_at, rate_limit_rpm)
+    VALUES (@id, @key, @name, @expires_at, @rpm)
+  `).run({ id, key, name, expires_at, rpm })
 
   return db.prepare('SELECT * FROM api_keys WHERE id = ?').get(id) as ApiKey
 }
 
-// validate a key — checks active + not expired
+// ── Validate ──────────────────────────────────────────────────────────────────
 export function validateApiKey(key: string): ApiKey | null {
   const record = db.prepare(`
-    SELECT * FROM api_keys
-    WHERE key = ? AND is_active = 1
+    SELECT * FROM api_keys WHERE key = ? AND is_active = 1
   `).get(key) as ApiKey | undefined
 
   if (!record) return null
 
-  // check expiry
   if (record.expires_at) {
     const expired = new Date(record.expires_at) < new Date()
     if (expired) {
-      // auto-deactivate expired key
       db.prepare('UPDATE api_keys SET is_active = 0 WHERE id = ?').run(record.id)
       return null
     }
   }
 
-  // increment request count
   db.prepare('UPDATE api_keys SET requests = requests + 1 WHERE key = ?').run(key)
-
   return record
 }
 
-// revoke a key
+// ── Revoke ────────────────────────────────────────────────────────────────────
 export function revokeApiKey(id: string): boolean {
-  const result = db.prepare('UPDATE api_keys SET is_active = 0 WHERE id = ?').run(id)
-  return result.changes > 0
+  return db.prepare('UPDATE api_keys SET is_active = 0 WHERE id = ?').run(id).changes > 0
 }
 
-// update expiry on an existing key
+// ── Update expiry ──────────────────────────────────────────────────────────────
 export function updateKeyExpiry(id: string, expiresInDays: number): boolean {
-  const expires_at = expiryDate(expiresInDays)
-  const result = db.prepare(`
+  return db.prepare(`
     UPDATE api_keys SET expires_at = ?, is_active = 1 WHERE id = ?
-  `).run(expires_at, id)
-  return result.changes > 0
+  `).run(expiryDate(expiresInDays), id).changes > 0
 }
 
-// permanently delete a key and its associated logs
+// ── Update rate limit ─────────────────────────────────────────────────────────
+export function updateRateLimit(id: string, rpm: number): boolean {
+  if (rpm < 1) return false
+  return db.prepare(`
+    UPDATE api_keys SET rate_limit_rpm = ? WHERE id = ?
+  `).run(rpm, id).changes > 0
+}
+
+// ── Permanent delete (with logs) ──────────────────────────────────────────────
 export function deleteApiKey(id: string): boolean {
-  const txn = db.transaction(() => {
+  return db.transaction(() => {
     db.prepare('DELETE FROM request_logs WHERE api_key_id = ?').run(id)
-    const result = db.prepare('DELETE FROM api_keys WHERE id = ?').run(id)
-    return result.changes > 0
-  })
-  return txn()
+    return db.prepare('DELETE FROM api_keys WHERE id = ?').run(id).changes > 0
+  })()
 }
 
-// remove custom schema from a key (admin use)
+// ── Delete custom schema ──────────────────────────────────────────────────────
 export function deleteCustomSchema(id: string): boolean {
-  const result = db.prepare('UPDATE api_keys SET custom_schema = NULL WHERE id = ?').run(id)
-  return result.changes > 0
+  return db.prepare('UPDATE api_keys SET custom_schema = NULL WHERE id = ?').run(id).changes > 0
 }
 
-// list all keys
+// ── List all ──────────────────────────────────────────────────────────────────
 export function listApiKeys(): ApiKey[] {
   return db.prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as ApiKey[]
 }
