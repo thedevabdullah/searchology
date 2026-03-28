@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { createApiKey, revokeApiKey, listApiKeys, updateKeyExpiry } from '../auth/keyGenerator'
+import { createApiKey, revokeApiKey, deleteApiKey, deleteCustomSchema, listApiKeys, updateKeyExpiry } from '../auth/keyGenerator'
 
 export const keysRouter = Router()
 
@@ -55,13 +55,32 @@ keysRouter.patch('/:id/expiry', (req: Request, res: Response) => {
   })
 })
 
-// DELETE /keys/:id — revoke a key
+// DELETE /keys/:id — revoke or permanently delete a key
+// Use ?permanent=true to permanently delete from DB
 keysRouter.delete('/:id', (req: Request, res: Response) => {
   if (!isAdmin(req)) { res.status(403).json({ error: 'forbidden' }); return }
 
-  const revoked = revokeApiKey(String(req.params.id))
-  if (!revoked) { res.status(404).json({ error: 'key not found' }); return }
-  res.json({ message: 'key revoked successfully' })
+  const id = String(req.params.id)
+  const permanent = req.query.permanent === 'true'
+
+  if (permanent) {
+    const deleted = deleteApiKey(id)
+    if (!deleted) { res.status(404).json({ error: 'key not found' }); return }
+    res.json({ message: 'key permanently deleted' })
+  } else {
+    const revoked = revokeApiKey(id)
+    if (!revoked) { res.status(404).json({ error: 'key not found' }); return }
+    res.json({ message: 'key revoked successfully' })
+  }
+})
+
+// DELETE /keys/:id/schema — admin endpoint to remove custom schema from a key
+keysRouter.delete('/:id/schema', (req: Request, res: Response) => {
+  if (!isAdmin(req)) { res.status(403).json({ error: 'forbidden' }); return }
+
+  const deleted = deleteCustomSchema(String(req.params.id))
+  if (!deleted) { res.status(404).json({ error: 'key not found' }); return }
+  res.json({ message: 'custom schema removed' })
 })
 
 // GET /keys — list all keys with expiry info
@@ -81,15 +100,16 @@ keysRouter.get('/', (req: Request, res: Response) => {
         : null
 
       return {
-        id:         k.id,
-        key:        k.key,
-        name:       k.name,
-        is_active:  k.is_active === 1 && !expired,
-        requests:   k.requests,
-        expires_at: k.expires_at,
-        days_left:  daysLeft,
+        id:            k.id,
+        key:           k.key,
+        name:          k.name,
+        is_active:     k.is_active === 1 && !expired,
+        requests:      k.requests,
+        expires_at:    k.expires_at,
+        days_left:     daysLeft,
         expired,
-        created_at: k.created_at
+        custom_schema: (k as any).custom_schema || null,
+        created_at:    k.created_at
       }
     })
   })

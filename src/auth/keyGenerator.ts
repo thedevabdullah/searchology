@@ -78,6 +78,22 @@ export function updateKeyExpiry(id: string, expiresInDays: number): boolean {
   return result.changes > 0
 }
 
+// permanently delete a key and its associated logs
+export function deleteApiKey(id: string): boolean {
+  const txn = db.transaction(() => {
+    db.prepare('DELETE FROM request_logs WHERE api_key_id = ?').run(id)
+    const result = db.prepare('DELETE FROM api_keys WHERE id = ?').run(id)
+    return result.changes > 0
+  })
+  return txn()
+}
+
+// remove custom schema from a key (admin use)
+export function deleteCustomSchema(id: string): boolean {
+  const result = db.prepare('UPDATE api_keys SET custom_schema = NULL WHERE id = ?').run(id)
+  return result.changes > 0
+}
+
 // list all keys
 export function listApiKeys(): ApiKey[] {
   return db.prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as ApiKey[]

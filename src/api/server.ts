@@ -37,43 +37,68 @@ app.get('/health', (req: Request, res: Response) => {
 // ─── GET /schema — returns full built-in schema ────────────────────────────────
 app.get('/schema', (req: Request, res: Response) => {
   const categories: Record<string, Record<string, string>> = {
-    product_identity: {},
-    physical:         {},
-    target_person:    {},
-    occasion_usage:   {},
-    pricing:          {},
-    quality:          {},
-    delivery:         {},
-    electronics:      {},
-    style:            {},
-    special:          {}
+    product_identity:     {},
+    physical:             {},
+    target_person:        {},
+    occasion_usage:       {},
+    pricing:              {},
+    quality:              {},
+    delivery:             {},
+    electronics_tech:     {},
+    style_aesthetics:     {},
+    food_health_beauty:   {},
+    compatibility_format: {},
+    special:              {}
   }
 
-  // map each key to its category
+  // map every schema key to its display category
   const categoryMap: Record<string, string> = {
+    // Product Identity
     product_type: 'product_identity', product_name: 'product_identity',
-    brand: 'product_identity', model: 'product_identity',
-    category: 'product_identity', subcategory: 'product_identity',
-    color: 'physical', color_secondary: 'physical', size: 'physical',
-    size_type: 'physical', material: 'physical', pattern: 'physical',
-    shape: 'physical', weight: 'physical', dimensions: 'physical',
-    gender: 'target_person', age: 'target_person', age_group: 'target_person',
-    relationship: 'target_person', profession: 'target_person',
-    occasion: 'occasion_usage', season: 'occasion_usage', weather: 'occasion_usage',
-    usage: 'occasion_usage', activity: 'occasion_usage',
-    price_max: 'pricing', price_min: 'pricing', currency: 'pricing',
-    budget_label: 'pricing', discount: 'pricing',
-    condition: 'quality', quality_tier: 'quality', rating_min: 'quality',
-    certification: 'quality',
-    delivery_speed: 'delivery', location: 'delivery', availability: 'delivery',
-    seller_type: 'delivery',
-    storage: 'electronics', ram: 'electronics', battery: 'electronics',
-    display_size: 'electronics', connectivity: 'electronics',
-    operating_system: 'electronics', processor: 'electronics',
-    style: 'style', fit: 'style', neckline: 'style', sleeve: 'style',
-    aesthetic: 'style',
-    eco_friendly: 'special', handmade: 'special', customizable: 'special',
-    gift_wrap: 'special', quantity: 'special', language: 'special'
+    brand:        'product_identity', model:        'product_identity',
+    category:     'product_identity', subcategory:  'product_identity',
+    // Physical Attributes
+    color:       'physical', color_secondary: 'physical', size:       'physical',
+    size_type:   'physical', material:        'physical', pattern:    'physical',
+    shape:       'physical', weight:          'physical', dimensions: 'physical',
+    volume:      'physical', capacity:        'physical',
+    // Target Person
+    gender:       'target_person', age:          'target_person',
+    age_group:    'target_person', relationship: 'target_person',
+    profession:   'target_person', pet_type:     'target_person',
+    // Occasion & Usage
+    occasion: 'occasion_usage', season:   'occasion_usage',
+    weather:  'occasion_usage', usage:    'occasion_usage',
+    activity: 'occasion_usage',
+    // Pricing & Value
+    price_max:    'pricing', price_min:   'pricing',
+    currency:     'pricing', budget_label:'pricing', discount: 'pricing',
+    // Quality & Condition
+    condition:    'quality', quality_tier:  'quality',
+    rating_min:   'quality', certification: 'quality',
+    // Delivery & Availability
+    delivery_speed: 'delivery', location:    'delivery',
+    availability:   'delivery', seller_type: 'delivery',
+    // Electronics & Tech
+    storage:          'electronics_tech', ram:              'electronics_tech',
+    battery:          'electronics_tech', display_size:     'electronics_tech',
+    refresh_rate:     'electronics_tech', camera:           'electronics_tech',
+    connectivity:     'electronics_tech', operating_system: 'electronics_tech',
+    processor:        'electronics_tech', wattage:          'electronics_tech',
+    // Style & Aesthetics
+    style:    'style_aesthetics', fit:       'style_aesthetics',
+    neckline: 'style_aesthetics', sleeve:    'style_aesthetics',
+    length:   'style_aesthetics', aesthetic: 'style_aesthetics',
+    // Food, Health & Beauty
+    dietary: 'food_health_beauty', fragrance: 'food_health_beauty',
+    // Compatibility & Format
+    compatibility: 'compatibility_format', format:    'compatibility_format',
+    platform:      'compatibility_format', room:      'compatibility_format',
+    skin_type:     'compatibility_format',
+    // Special Requirements
+    eco_friendly: 'special', handmade:     'special',
+    customizable: 'special', gift_wrap:    'special',
+    quantity:     'special', language:     'special'
   }
 
   for (const [key, description] of Object.entries(builtInSchema)) {
@@ -268,6 +293,23 @@ app.get('/logs', (req: Request, res: Response) => {
     res.json({ total: logs.length, logs })
   } catch (err) {
     res.status(500).json({ error: 'failed to fetch logs' })
+  }
+})
+
+// ─── DELETE /logs — clear request logs (admin only) ────────────────────────────
+app.delete('/logs', (req: Request, res: Response) => {
+  if (!isAdmin(req)) { res.status(403).json({ error: 'forbidden' }); return }
+
+  const keyId = req.query.key_id ? String(req.query.key_id) : null
+
+  try {
+    const result = keyId
+      ? db.prepare('DELETE FROM request_logs WHERE api_key_id = ?').run(keyId)
+      : db.prepare('DELETE FROM request_logs').run()
+
+    res.json({ message: 'logs cleared', deleted: result.changes })
+  } catch (err) {
+    res.status(500).json({ error: 'failed to clear logs' })
   }
 })
 
