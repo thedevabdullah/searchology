@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express'
 import { createHash }              from 'crypto'
+import rateLimit                   from 'express-rate-limit'
 import { extractIntent, getSuggestions } from '../core/groqClient'
 import { parseResponse }           from '../core/responseParser'
 import { requireApiKey }           from '../auth/authMiddleware'
@@ -30,6 +31,31 @@ function buildCacheHash(query: string, schema: Record<string, string>): string {
   const payload = query.trim().toLowerCase() + '\x00' + JSON.stringify(schema)
   return createHash('md5').update(payload).digest('hex')
 }
+
+// ── IP-based rate limiter for /register ──────────────────────────────────────
+// Separate from the main rateLimiter which buckets by API key.
+// 3 registrations per IP per hour prevents spam-key creation from unauthenticated clients.
+// Reads x-forwarded-for first (set by Heroku / Render / nginx) then falls back to req.ip.
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const fwd = req.headers['x-forwarded-for']
+    const ip  = Array.isArray(fwd)
+      ? fwd[0]
+      : (typeof fwd === 'string' ? fwd.split(',')[0] : req.ip ?? 'unknown')
+    return ip.trim()
+  },
+  handler: (_req, res) => {
+    res.status(429).json({
+      error:               'too_many_registrations',
+      message:             'Too many API keys created from this IP address. Try again in 1 hour.',
+      retry_after_seconds: 3600
+    })
+  }
+})
 
 // ─── GET /health ──────────────────────────────────────────────────────────────
 app.get('/health', (req: Request, res: Response) => {
@@ -110,7 +136,8 @@ app.get('/schema', (req: Request, res: Response) => {
 })
 
 // ─── POST /register ───────────────────────────────────────────────────────────
-app.post('/register', (req: Request, res: Response) => {
+// registerLimiter applied here: 3 keys per IP per hour.
+app.post('/register', registerLimiter, (req: Request, res: Response) => {
   const { name } = req.body
   if (!name || typeof name !== 'string' || name.trim() === '') {
     res.status(400).json({ error: 'invalid_input', message: 'name is required' }); return
@@ -221,6 +248,104 @@ app.delete('/key/schema', requireApiKey, (req: Request, res: Response) => {
   }
 })
 
+// ─── GET /key/usage — 7-day daily usage breakdown (SDK endpoint) ─────────────
+// Returns per-day request counts, success/error split, and avg latency for the
+// authenticated key over the last 7 days. Used by the SDK's getKeyUsage().
+app.get('/key/usage', requireApiKey, (req: Request, res: Response) => {
+  // @ts-ignore
+  const record = req.apiKey as any
+  try {
+    const daily = db.prepare(`
+      SELECT
+        date(replace(created_at, ' ', 'T'))                          AS day,
+        COUNT(*)                                                      AS requests,
+        SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END)                AS successful,
+        SUM(CASE WHEN status != 200 THEN 1 ELSE 0 END)               AS errors,
+        ROUND(AVG(CASE WHEN status = 200 THEN latency_ms END))        AS avg_latency_ms
+      FROM request_logs
+      WHERE api_key_id = ? AND created_at >= datetime('now', '-7 days')
+      GROUP BY day
+      ORDER BY day ASC
+    `).all(record.id)
+
+    const totals = db.prepare(`
+      SELECT
+        COUNT(*)                                                      AS requests_7d,
+        SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END)                AS successful_7d,
+        SUM(CASE WHEN status != 200 THEN 1 ELSE 0 END)               AS errors_7d,
+        ROUND(AVG(CASE WHEN status = 200 THEN latency_ms END))        AS avg_latency_7d
+      FROM request_logs
+      WHERE api_key_id = ? AND created_at >= datetime('now', '-7 days')
+    `).get(record.id) as any
+
+    res.json({
+      key_id: record.id,
+      name:   record.name,
+      daily,
+      totals: {
+        requests_7d:   totals?.requests_7d   ?? 0,
+        successful_7d: totals?.successful_7d ?? 0,
+        errors_7d:     totals?.errors_7d     ?? 0,
+        avg_latency_7d: totals?.avg_latency_7d ?? null
+      }
+    })
+  } catch (err) {
+    console.error('Key usage error:', err)
+    res.status(500).json({ error: 'usage_failed', message: 'Failed to fetch usage data' })
+  }
+})
+
+// ─── GET /key-stats/:id — 7-day usage for any key (admin endpoint) ────────────
+// Used by the admin panel drawer to render per-key usage charts.
+// Separate path from /keys/:id to avoid conflict with keysRouter.
+app.get('/key-stats/:id', (req: Request, res: Response) => {
+  if (!isAdmin(req)) { res.status(403).json({ error: 'forbidden' }); return }
+  const keyId = String(req.params.id)
+
+  try {
+    const keyRecord = db.prepare('SELECT id, name FROM api_keys WHERE id = ?').get(keyId) as any
+    if (!keyRecord) { res.status(404).json({ error: 'not_found', message: 'Key not found' }); return }
+
+    const daily = db.prepare(`
+      SELECT
+        date(replace(created_at, ' ', 'T'))                          AS day,
+        COUNT(*)                                                      AS requests,
+        SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END)                AS successful,
+        SUM(CASE WHEN status != 200 THEN 1 ELSE 0 END)               AS errors,
+        ROUND(AVG(CASE WHEN status = 200 THEN latency_ms END))        AS avg_latency_ms
+      FROM request_logs
+      WHERE api_key_id = ? AND created_at >= datetime('now', '-7 days')
+      GROUP BY day
+      ORDER BY day ASC
+    `).all(keyId)
+
+    const totals = db.prepare(`
+      SELECT
+        COUNT(*)                                                      AS requests_7d,
+        SUM(CASE WHEN status = 200 THEN 1 ELSE 0 END)                AS successful_7d,
+        SUM(CASE WHEN status != 200 THEN 1 ELSE 0 END)               AS errors_7d,
+        ROUND(AVG(CASE WHEN status = 200 THEN latency_ms END))        AS avg_latency_7d
+      FROM request_logs
+      WHERE api_key_id = ? AND created_at >= datetime('now', '-7 days')
+    `).get(keyId) as any
+
+    res.json({
+      key_id: keyRecord.id,
+      name:   keyRecord.name,
+      daily,
+      totals: {
+        requests_7d:    totals?.requests_7d    ?? 0,
+        successful_7d:  totals?.successful_7d  ?? 0,
+        errors_7d:      totals?.errors_7d      ?? 0,
+        avg_latency_7d: totals?.avg_latency_7d ?? null
+      }
+    })
+  } catch (err) {
+    console.error('Key stats error:', err)
+    res.status(500).json({ error: 'stats_failed', message: 'Failed to fetch key stats' })
+  }
+})
+
 // ─── GET /logs ────────────────────────────────────────────────────────────────
 app.get('/logs', (req: Request, res: Response) => {
   if (!isAdmin(req)) { res.status(403).json({ error: 'forbidden' }); return }
@@ -251,15 +376,11 @@ app.delete('/logs', (req: Request, res: Response) => {
 })
 
 // ─── GET /analytics ───────────────────────────────────────────────────────────
-// Server-side aggregation — never relies on the frontend downloading raw logs.
-// All heavy SQLite queries run in-process and return only the compact summary.
 app.get('/analytics', (req: Request, res: Response) => {
   if (!isAdmin(req)) { res.status(403).json({ error: 'forbidden' }); return }
 
   try {
-    // ── 1. 14-day request timeline ────────────────────────────────────────────
-    // SQLite datetime normalization: replace space separator with 'T' so
-    // date() function parses SQLite "YYYY-MM-DD HH:MM:SS" strings correctly.
+    // ── 1. 14-day request timeline (date-filtered for index use) ──────────────
     const timeline = db.prepare(`
       SELECT
         date(replace(created_at, ' ', 'T')) AS day,
@@ -273,12 +394,12 @@ app.get('/analytics', (req: Request, res: Response) => {
       ORDER BY day ASC
     `).all()
 
-    // ── 2. Top 10 most common queries (case/whitespace normalised) ─────────────
+    // ── 2. Top 10 most common queries ─────────────────────────────────────────
     const topQueries = db.prepare(`
       SELECT
-        lower(trim(query))   AS query,
-        COUNT(*)             AS count,
-        SUM(cache_hit)       AS cache_hits,
+        lower(trim(query))     AS query,
+        COUNT(*)               AS count,
+        SUM(cache_hit)         AS cache_hits,
         ROUND(AVG(latency_ms)) AS avg_latency
       FROM request_logs
       WHERE status = 200
@@ -391,7 +512,6 @@ app.post('/extract', requireApiKey, sanitizeQuery, async (req: Request, res: Res
   const cachedJson  = getCacheEntry(cacheHash)
 
   if (cachedJson) {
-    // Cache HIT — return immediately, no Groq call needed
     try {
       const result    = JSON.parse(cachedJson)
       const keysFound = Object.keys(result).length
@@ -427,13 +547,10 @@ app.post('/extract', requireApiKey, sanitizeQuery, async (req: Request, res: Res
     const result             = parseResponse(raw, activeSchema)
     const keysFound          = Object.keys(result).length
 
-    // Only cache successful extractions with at least one attribute found.
-    // Never cache keys_found=0 — those queries need fresh suggestions each time.
     if (keysFound > 0) {
       setCacheEntry(cacheHash, JSON.stringify(result), schemaType)
     }
 
-    // Suggestions when nothing was extracted
     let suggestions: string[] | undefined
     if (keysFound === 0) {
       suggestions = await getSuggestions(query)
